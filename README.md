@@ -1,250 +1,171 @@
-# Recovering Steam User Activity from Process Memory
+# Steam Activity Carver (Volatility 3)
+Recover Steam user activity from a Windows memory image using a Volatility 3 plugin.  
+The plugin carves:
 
-Carve Steam artifacts (SteamID64, chat lines, URLs) from a Windows memory image, then clean results into a readable CSV.
+- SteamID64 values
+- Chat fragments with 13-digit Unix millisecond timestamps
+- Steam and Valve related URLs (Store, Community, CDN, loopback)
+    
+Works with a single memory image. No Windows kernel symbols required.
 
-This repo contains:
+---
 
-- `steam_forensics.py` - a Volatility 3 plugin that scans a memory layer for Steam artifacts
+## Repository contents
+- `steam_forensics.py` — Volatility 3 plugin that scans a memory layer and emits structured rows
+- `postprocess.py` (Highly recommend using in my test cases the csv was too large and wouldn't load without running the postprocess) — trims noise and produces a short findings report
+    
 
-- `postprocess.py` - a small script that filters and summarizes the raw CSV
+---
 
-## Quick Start
-
-1) Create a Windows 11 ARM64 VM  
-2) Install Steam and log in with a test account  
-3) Produce a memory dump during activity  
-4) Run the Volatility plugin to generate a raw CSV  
-5) Run the postprocess script to clean and summarize results
-
-All commands below are PowerShell unless noted.
+## Quick start
+- Install Python 3.11+ and Volatility 3
+- Capture a full memory image while Steam is active
+- Put `steam_forensics.py` on disk
+- Run Volatility with the plugin to write a CSV
+- (Optional) Run `postprocess.py` to clean and summarize
 
 ---
 
 ## Requirements
-
-Guest VM: Windows 11 ARM64
-
-Software inside the VM:
-
-- Steam desktop client
-- Python 3.11 ARM64
+- Python 3.11 or newer
 - Volatility 3
-- Sysinternals Strings (64-bit)
-- A memory dumper (choose one)
-  - WinPMEM  
-  - DumpIt  
-  - Task Manager basic process dump is not sufficient for full RAM. Use a full memory acquisition tool.
-
-Folder layout used in examples:
-```
-C:\Steam-Mem-Forensics\
-  20_acq\
-    scenarioA_friends\
-      images\
-      hashes\
-    scenarioB_chat\
-      images\
-      hashes\
-  30_analysis\
-    scenarioA_friends\
-    scenarioB_chat\
-  40_plugin\
-    steamcarve\
-      steam_forensics.py
-    postprocess.py
-```
-
----
-
-## Install tools
-
-### Python and Volatility 3
 ```powershell
-# Verify Python
-python --version
-
-# Install Volatility 3
-pip install volatility3
-
-# Confirm vol.exe is on PATH
-Get-Command vol.exe
+    pip install volatility3
 ```
+- A Windows memory image created with DumpIt or WinPMEM  
+    Example: `C:\evidence\image.dmp`
+- Optional: Sysinternals `strings64.exe` for quick spot checks
+    
 
-### Sysinternals Strings (optional but recommended)
-Download Strings from Microsoft Sysinternals and place `strings64.exe` somewhere on PATH or reference it with a full path.
+No symbols are needed. The plugin carves printable strings and classifies hits.
 
 ---
 
-## Prepare Steam and safety
+## Install Volatility 3
+```powershell
+python --version pip install --upgrade pip pip install volatility3  
+# confirm vol.exe is on PATH 
+Get-Command vol.exe`
+```
 
-- Use a test account with no payment methods
-- Disable Steam Cloud sync for consistency
-- Generate realistic activity before capture
-  - Scenario A: open profile and friends
-  - Scenario B: send and receive chat messages with distinctive phrases
-  - Scenario C: browse store and library, launch a couple of games
+---
+
+## Place the plugin
+Put the files in any folder, for example:
+`C:\tools\steamcarve\steam_forensics.py & postprocess.py`
 
 ---
 
 ## Acquire a memory image
+Generate realistic Steam activity before capture:
+- Open profile and friends
+- Send a few chat lines with a distinctive phrase
+- Browse Store or Community
+- Optionally launch a game
 
-Use WinPMEM or DumpIt to capture a full memory image as a `.raw` or `.dmp` file. The exact tool steps vary, but the end result is a large file containing guest memory.
+Create the image with DumpIt or WinPMEM. Example output: `C:\evidence\image.dmp`
 
-Move and hash the newest dump into a scenario folder:
-
-```powershell
-$root   = 'C:\Steam-Mem-Forensics'
-$scen   = 'scenarioB_chat'  # change for A or C
-$imgDir = Join-Path $root "20_acq\$scen\images"
-$hashDir= Join-Path $root "20_acq\$scen\hashes"
-New-Item -ItemType Directory -Force -Path $imgDir,$hashDir | Out-Null
-
-# Find newest dump
-$img = Get-ChildItem C:\ -Include *.dmp,*.raw -File -Recurse -ErrorAction SilentlyContinue |
-       Sort-Object LastWriteTime -Descending |
-       Select-Object -First 1
-
-# Name the image for this scenario
-$base = 'B0_chat_active'  # pick a name per scenario
-$dst  = Join-Path $imgDir "$base$([IO.Path]::GetExtension($img.FullName))"
-Move-Item -LiteralPath $img.FullName -Destination $dst -Force
-
-# Hash the image
-Get-FileHash $dst -Algorithm SHA256 | Tee-Object (Join-Path $hashDir "$base.sha256")
-
-# Confirm size
-Get-Item $dst | Select Name, Length
-```
+Optional integrity check:
+`Get-FileHash C:\evidence\image.dmp -Algorithm SHA256`
 
 ---
 
-## Optional: produce strings dumps for quick ground truth
+## Run the plugin and write CSV
+Use UTF-8 and let Volatility’s CSV renderer write directly to a file.
 
-This step is useful to verify that useful text exists before running the plugin.
-
-```powershell
-$imgPath = 'C:\Steam-Mem-Forensics\20_acq\scenarioB_chat\images\B0_chat_active.dmp'
-$outDir  = 'C:\Steam-Mem-Forensics\30_analysis\scenarioB_chat'
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-
-# ASCII strings
-strings64.exe -accepteula -n 6 "$imgPath" > (Join-Path $outDir 'B0_chat_active_ascii.txt')
-
-# UTF-16LE strings
-strings64.exe -accepteula -n 6 -u "$imgPath" > (Join-Path $outDir 'B0_chat_active_unicode.txt')
-```
-
-Open the text files and spot check for Steam URLs, chat fragments, or IDs.
-
----
-
-## Run the Volatility plugin
-
-Place `steam_forensics.py` here:
-```
-C:\Steam-Mem-Forensics\40_plugin\steamcarve\steam_forensics.py
-```
-
-Command to run and write CSV:
-
-```powershell
-# UTF-8 everywhere
-chcp 65001 > $null
+```powershell 
+# UTF-8 
+chcp 65001 > $null 
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONIOENCODING = 'utf-8'  
 
-# Paths
-$vol     = (Get-Command vol.exe -ErrorAction Stop).Source
-$plugDir = 'C:\Steam-Mem-Forensics\40_plugin'
-$imgPath = (Get-ChildItem 'C:\Steam-Mem-Forensics\demo' -Filter *.dmp | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
-$dmpUri  = 'file:///' + ($imgPath -replace '\\','/')
-$outCsv  = 'C:\Steam-Mem-Forensics\demo\personal_volatility_program_chat.csv'
+# Paths 
+$vol = (Get-Command vol.exe -ErrorAction Stop).Source 
+$plugDir = 'C:\tools\steamcarve'               
 
-# Run plugin -> capture stdout to CSV (bulletproof)
-& $vol -q --plugin-dirs $plugDir --single-location $dmpUri -r csv `
-  steamcarve.steam_forensics.SteamCarver `
-  --chunk-size 16777216 --overlap 1024 --minlen 6 --scan-unicode `
-  | Out-File -FilePath $outCsv -Encoding utf8 -Width 4096
-
-# Show the file size and timestamp to prove it was created
-Get-Item $outCsv | Select Name,Length,LastWriteTime
+# folder that contains steam_forensics.py 
+$dmpUri  = 'file:///C:/evidence/image.dmp'     
+# use file:/// and forward slashes 
+$outDir  = 'C:\evidence' $fname   = 'steam_activity_raw.csv'  
+# Run plugin. CSV renderer writes directly to a file. 
+& $vol -q --plugin-dirs $plugDir --single-location $dmpUri ` -r csv -o $outDir -f $fname `steamcarve.steam_forensics.SteamCarver ` --chunk-size 33554432 --overlap 512 --minlen 12 --scan-unicode False  Get-Item (Join-Path $outDir $fname) | Select Name,Length,LastWriteTime
 ```
 
-Notes
-- The plugin scans the memory layer and emits rows with columns: kind, offset, preview, steamid, unix_ts, message, value
-- If you see a lot of noise, raise `--minlen` to 8 or 10
-- Keep `--scan-unicode` on to catch UTF-16LE remnants
+This creates `C:\evidence\steam_activity_raw.csv`.
+
+If you prefer stdout capture, omit `-o` and `-f` and pipe to:
+
+`| Out-File -FilePath C:\evidence\steam_activity_raw.csv -Encoding utf8 -Width 4096`
 
 ---
 
-## Clean and summarize the raw CSV
+## CSV columns
+- `kind` - url, steamid, chat, or string
+- `offset` — virtual offset in the memory layer
+- `preview` — short human readable snippet
+- `steamid` — SteamID64 if present
+- `unix_ts` — 13-digit Unix time in milliseconds if present
+- `message` — chat message fragment if matched
+- `value` — exact URL for `kind=url`
 
-Run the postprocess script to reduce noise and create a summary.
+---
 
-Place `postprocess.py` here:
-```
-C:\Steam-Mem-Forensics\40_plugin\postprocess.py
-```
+## Tuning for speed and signal
+Start fast, then increase coverage if needed.
+- `--chunk-size` controls bytes per read. Larger is faster. Try 32 MiB or 64 MiB.
+- `--overlap` keeps cross-boundary strings. 256 to 1024 works well.
+- `--minlen` reduces noise. Raising to 12 or 16 speeds up runs.
+- `--scan-unicode` toggles UTF-16LE scanning. False is faster. True improves coverage.
 
-Command:
+Presets:
+
+- Faster runs:
+    `--chunk-size 33554432 --overlap 512 --minlen 12 --scan-unicode False`
+    
+- Deeper coverage:
+    `--chunk-size 16777216 --overlap 1024 --minlen 6 --scan-unicode True`
+    
+---
+
+## Optional cleaning and summary
+`postprocess.py` trims noise and generates a short report.
+
+`python C:\tools\steamcarve\postprocess.py C:\evidence\steam_activity_raw.csv`
+
+Outputs next to the input CSV:
+- `steam_activity_raw_clean.csv` — filtered rows with ISO timestamps and URL domains
+- `steam_activity_raw_findings.csv` — top URL domains, SteamIDs found, and a sample of chat lines
+    
+
+---
+
+## Example end to end
 ```powershell
-python C:\Steam-Mem-Forensics\40_plugin\postprocess.py `
-  "C:\Steam-Mem-Forensics\30_analysis\scenarioB_chat\personal_volatility_program_chat.csv"
+# 1) Run the plugin 
+& $vol -q --plugin-dirs C:\tools\steamcarve --single-location file:///C:/evidence/image.dmp ` -r csv -o C:\evidence -f steam_activity_raw.csv ` steamcarve.steam_forensics.SteamCarver ` --chunk-size 33554432 --overlap 512 --minlen 12 --scan-unicode False  
+# 2) Clean and summarize 
+python C:\tools\steamcarve\postprocess.py C:\evidence\steam_activity_raw.csv
 ```
 
-Outputs in the same folder:
-
-- `personal_volatility_program_chat_clean.csv`  
-  Filtered rows. Focuses on kinds url, steamid, chat. Adds ISO timestamp and domain for URLs.
-- `personal_volatility_program_chat_findings.csv`  
-  A small findings file with top URL domains, SteamIDs discovered, and a sample of chat lines.
-
-Open the clean CSV in Excel or a text editor for review.
-
----
-
-## Expected results
-
-- Scenario A: profile and friend traces  
-  SteamID64, vanity URLs, store URLs with app IDs
-- Scenario B: chat traces  
-  Message fragments with nearby 13-digit unix ms timestamps
-- Scenario C: browsing and launch context  
-  store.steampowered.com, steamcommunity.com, steamstatic, steamloopback URLs and assets
+Open `steam_activity_raw_clean.csv` and `steam_activity_raw_findings.csv`.
 
 ---
 
 ## Troubleshooting
+Printed to console instead of a file  
+Use `-r csv -o <dir> -f <name>` with no pipe. The renderer writes the file directly.
 
-- Volatility cannot satisfy Windows requirements on ARM64  
-  The plugin uses a carving approach and does not require Windows kernel symbols. If core Windows plugins (pslist, etc.) do not work on your ARM64 dump, this plugin can still run with `--single-location` pointing at the image file. As an alternative, consider capturing on an x86_64 Windows VM for full Volatility support.
+Encoding errors  
+Keep the UTF-8 setup lines. Avoid `Out-File` unless you must pipe.
 
-- CSV characters fail to render or save  
-  Always pipe to `Out-File -Encoding utf8 -Width 4096` to avoid codepage and wrapping issues.
+Slow runs  
+Increase `--minlen`, set `--scan-unicode False`, and try a larger `--chunk-size`.
 
-- Too much noise  
-  Increase `--minlen` and keep `--scan-unicode` enabled. You can also restrict URL regexes or filter further in `postprocess.py`.
-
-- Very large output  
-  That is normal for a carve. Use `postprocess.py` to create a smaller, clean CSV and a short findings file.
-
----
-
-## Reproduce in minutes
-
-1) Do some activity in Steam  
-   - Open profile and friends  
-   - Send a few chat lines with a distinctive phrase  
-   - Browse a couple of store pages
-
-2) Capture memory with WinPMEM or DumpIt
-
-3) Move and hash the dump into `C:\Steam-Mem-Forensics\20_acq\<scenario>\images`
-
-4) Run the plugin command above to write `personal_volatility_program_chat.csv`
-
-5) Run `postprocess.py` on that CSV to produce `_clean.csv` and `_findings.csv`
-
-6) Review the clean CSV and findings file
+ARM64 Windows plugins fail  
+This plugin does not rely on symbols. It works with `--single-location` on the image.
 
 ---
+
+## License and attribution
+Own the rights to your code and capture your own test data.  
+Respect privacy and legal constraints in your jurisdiction.

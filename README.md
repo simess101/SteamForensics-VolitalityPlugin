@@ -148,6 +148,10 @@ C:\Steam-Mem-Forensics\40_plugin\steamcarve\steam_forensics.py
 Command to run and write CSV:
 
 ```powershell
+chcp 65001 > $null
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$env:PYTHONIOENCODING = 'utf-8'
+
 $vol     = (Get-Command vol.exe -ErrorAction Stop).Source
 $plugDir = 'C:\Steam-Mem-Forensics\40_plugin'
 $dmpUrl  = 'file:///C:/Steam-Mem-Forensics/20_acq/scenarioB_chat/images/B0_chat_active.dmp'

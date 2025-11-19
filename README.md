@@ -148,21 +148,26 @@ C:\Steam-Mem-Forensics\40_plugin\steamcarve\steam_forensics.py
 Command to run and write CSV:
 
 ```powershell
+# UTF-8 everywhere
 chcp 65001 > $null
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONIOENCODING = 'utf-8'
 
+# Paths
 $vol     = (Get-Command vol.exe -ErrorAction Stop).Source
 $plugDir = 'C:\Steam-Mem-Forensics\40_plugin'
-$dmpUrl  = 'file:///C:/Steam-Mem-Forensics/20_acq/scenarioB_chat/images/B0_chat_active.dmp'
-$outDir  = 'C:\Steam-Mem-Forensics\30_analysis\scenarioB_chat'
-$csvName = 'personal_volatility_program_chat.csv'
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+$imgPath = (Get-ChildItem 'C:\Steam-Mem-Forensics\demo' -Filter *.dmp | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+$dmpUri  = 'file:///' + ($imgPath -replace '\\','/')
+$outCsv  = 'C:\Steam-Mem-Forensics\demo\personal_volatility_program_chat.csv'
 
-& $vol --plugin-dirs $plugDir -r csv --single-location $dmpUrl `
+# Run plugin -> capture stdout to CSV (bulletproof)
+& $vol -q --plugin-dirs $plugDir --single-location $dmpUri -r csv `
   steamcarve.steam_forensics.SteamCarver `
   --chunk-size 16777216 --overlap 1024 --minlen 6 --scan-unicode `
-  | Out-File -FilePath (Join-Path $outDir $csvName) -Encoding utf8 -Width 4096
+  | Out-File -FilePath $outCsv -Encoding utf8 -Width 4096
+
+# Show the file size and timestamp to prove it was created
+Get-Item $outCsv | Select Name,Length,LastWriteTime
 ```
 
 Notes
